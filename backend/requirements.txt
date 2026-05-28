@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+supabase
+websockets>=13,<16
+pydantic
+pydantic-settings
+requests
+python-dotenv

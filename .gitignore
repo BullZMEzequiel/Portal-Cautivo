@@ -1,0 +1,16 @@
+cat << 'EOF' > .gitignore
+# Python (Backend)
+backend/.venv/
+backend/__pycache__/
+*.pyc
+backend/.env*
+
+# Node / React (Frontend)
+frontend/node_modules/
+frontend/dist/
+frontend/.env*
+
+# Sistema OS / VS Code
+.DS_Store
+.vscode/
+EOF
