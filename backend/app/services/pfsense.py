@@ -76,9 +76,7 @@ class PfsenseService:
         if (!function_exists("local_user_set_password")) {{
             throw new Exception("La funcion local_user_set_password no existe en este pfSense");
         }}
-        $item_wrapper = ["idx" => $existing_idx, "item" => &$userent];
-        local_user_set_password($item_wrapper, $password);
-        $userent = $item_wrapper["item"];
+        local_user_set_password($userent, $password);
 
         if ($existing_idx !== null) {{
             $user_config[$existing_idx] = $userent;
@@ -222,6 +220,45 @@ class PfsenseService:
         except Exception as e:
             print(f"Error al expulsar usuario de pfSense (XML-RPC): {e}")
             return None
+    
+    def obtener_estado_portal(self):
+        """
+        Consulta nativamente el estado del Portal Cautivo via XML-RPC.
+        Retorna la lista de usuarios activos con su IP, MAC y consumo de datos.
+        """
+        php_code = f"""
+        require_once("captiveportal.inc");
+        
+        // Capturar todas las sesiones activas en la zona configurada
+        $cpzone = "{self.zone}";
+        $active_sessions = captiveportal_read_db();
+        
+        $conectados = [];
+        foreach ($active_sessions as $session) {{
+            // Filtrar solo las que correspondan a nuestra zona actual
+            if ($session[1] == $cpzone || empty($cpzone)) {{
+                $conectados[] = [
+                    "username" => $session[4],
+                    "ip" => $session[2],
+                    "mac" => $session[3],
+                    "session_id" => $session[0],
+                    "bytes_uploaded" => $session[7],
+                    "bytes_downloaded" => $session[8],
+                    "connected_at" => date("Y-m-d H:i:s", $session[5])
+                ];
+            }}
+        }}
+        echo json_encode($conectados);
+        """
+        try:
+            # pfSense nos devuelve la salida del "echo" en un formato string JSON
+            response = self.server.pfsense.exec_php(php_code)
+            import json
+            return json.loads(response) if response else []
+        except Exception as e:
+            print(f"Error al extraer logs en tiempo real de pfSense: {e}")
+            return []
+
 
     @staticmethod
     def _php_string(value):

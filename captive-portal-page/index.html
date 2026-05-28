@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bienvenido al Restaurante - Conexión Wi-Fi</title>
+    <style>
+        :root {
+            --bg-main: #131316;
+            --bg-card: #1e1e24;
+            --border-color: rgba(192, 132, 252, 0.15);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --accent: #c084fc;
+            --accent-hover: #a855f7;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .portal-container {
+            width: 100%;
+            max-width: 400px;
+            padding: 24px;
+            box-sizing: border-box;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px 24px;
+            text-align: center;
+            box-shadow: rgba(0, 0, 0, 0.4) 0px 10px 15px -3px, rgba(0, 0, 0, 0.25) 0px 4px 6px -2px;
+        }
+
+        .logo-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            display: inline-block;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin: 0 0 8px 0;
+            letter-spacing: -0.5px;
+            color: #fff;
+        }
+
+        p {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin: 0 0 24px 0;
+            line-height: 1.5;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            padding-left: 4px;
+        }
+
+        .input-field {
+            width: 100%;
+            padding: 12px 16px;
+            box-sizing: border-box;
+            background-color: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 15px;
+            transition: all 0.2s ease;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: var(--accent);
+            background-color: rgba(192, 132, 252, 0.05);
+            box-shadow: 0 0 0 3px rgba(192, 132, 252, 0.15);
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 14px;
+            background-color: var(--accent);
+            border: none;
+            border-radius: 8px;
+            color: #131316;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            margin-top: 8px;
+        }
+
+        .btn-submit:hover {
+            background-color: var(--accent-hover);
+        }
+
+        .footer-text {
+            margin-top: 24px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="portal-container">
+        <div class="card">
+            <div class="logo-icon">🍽️</div>
+            
+            <h1>¡Bienvenido a Bambú!</h1>
+            <p>Introduce las credenciales proporcionadas por el dueño para conectarse a la red Wi-Fi.</p>
+            
+            <form method="post" action="$PORTAL_ACTION$">
+                
+                <div class="form-group">
+                    <label for="auth_user">Nombre de Usuario</label>
+                    <input type="text" id="auth_user" name="auth_user" class="input-field" placeholder="Ej. mesa05" required autocomplete="off">
+                </div>
+                
+                <div class="form-group">
+                    <label for="auth_pass">Contraseña de Acceso</label>
+                    <input type="password" id="auth_pass" name="auth_pass" class="input-field" placeholder="••••••••" required>
+                </div>
+                
+                <input type="hidden" name="redirurl" value="$PORTAL_REDIRURL$">
+                
+                <button type="submit" class="btn-submit">Navegar en Internet</button>
+            </form>
+
+            <div class="footer-text">
+                Al conectarte aceptas nuestras políticas de uso responsable de red.
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
