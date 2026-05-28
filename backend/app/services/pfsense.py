@@ -24,14 +24,13 @@ class PfsenseService:
         self.server = xmlrpc.client.ServerProxy(self.url, context=self.context)
 
     def registrar_usuario_pfsense(self, username, password):
-        """Añade el usuario al User Manager local de pfSense usando XML-RPC."""
+        """Añade un usuario común de Captive Portal al User Manager de pfSense."""
         username_php = self._php_string(username)
         password_php = self._php_string(password)
-        description_php = self._php_string(f"Empleado creado desde Portal Bambu: {username}")
+        description_php = self._php_string(f"Empleado Portal Bambu: {username}")
         zone_php = self._php_string(self.zone)
 
         php_code = f"""
-        global $config;
         require_once("config.inc");
         require_once("auth.inc");
 
@@ -41,78 +40,83 @@ class PfsenseService:
         $zone = {zone_php};
 
         $user_config = config_get_path("system/user", []);
-        $user_idx = null;
+        $existing_idx = null;
         foreach ($user_config as $idx => $usuario_existente) {{
             if (isset($usuario_existente["name"]) && $usuario_existente["name"] === $username) {{
-                $user_idx = $idx;
+                $existing_idx = $idx;
                 break;
             }}
         }}
 
-        if ($user_idx !== null) {{
-            $user_item_config = [
-                "idx" => $user_idx,
-                "item" => config_get_path("system/user/" . $user_idx)
-            ];
-        }} else {{
-            $user_item_config = [
-                "idx" => null,
-                "item" => []
-            ];
-        }}
+        $userent = ($existing_idx !== null) ? $user_config[$existing_idx] : [];
+        $old_uid = isset($userent["uid"]) ? (int)$userent["uid"] : null;
 
-        $userent =& $user_item_config["item"];
-        $userent["scope"] = "system";
+        $userent["scope"] = "user";
         $userent["name"] = $username;
         $userent["descr"] = $description;
         $userent["expires"] = "";
         $userent["authorizedkeys"] = "";
         $userent["ipsecpsk"] = "";
+        $userent["priv"] = ["user-services-captiveportal-login"];
+        unset($userent["groupname"]);
+
+        if (!isset($userent["uid"]) || (int)$userent["uid"] < 2000) {{
+            $max_uid = 1999;
+            foreach ($user_config as $existing_user) {{
+                if (isset($existing_user["uid"])) {{
+                    $max_uid = max($max_uid, (int)$existing_user["uid"]);
+                }}
+            }}
+
+            $nextuid = max((int)config_get_path("system/nextuid", 2000), $max_uid + 1, 2000);
+            $userent["uid"] = $nextuid;
+            config_set_path("system/nextuid", $nextuid + 1);
+        }}
 
         if (!function_exists("local_user_set_password")) {{
             throw new Exception("La funcion local_user_set_password no existe en este pfSense");
         }}
-        local_user_set_password($user_item_config, $password);
+        $item_wrapper = ["idx" => $existing_idx, "item" => &$userent];
+        local_user_set_password($item_wrapper, $password);
+        $userent = $item_wrapper["item"];
 
-        if ($user_idx !== null) {{
-            config_set_path("system/user/" . $user_idx, $userent);
+        if ($existing_idx !== null) {{
+            $user_config[$existing_idx] = $userent;
         }} else {{
-            $nextuid_config = config_get_path("system/nextuid");
-            if (empty($nextuid_config)) {{
-                $nextuid_config = 2000;
-            }}
-            $userent["uid"] = $nextuid_config++;
-            config_set_path("system/nextuid", $nextuid_config);
-
-            $group_config = config_get_path("system/group", []);
-            foreach ($group_config as $gidx => &$group) {{
-                if (isset($group["name"]) && $group["name"] === "all") {{
-                    if (!isset($group["member"]) || !is_array($group["member"])) {{
-                        $group["member"] = [];
-                    }}
-                    if (!in_array($userent["uid"], $group["member"])) {{
-                        $group["member"][] = $userent["uid"];
-                    }}
-                    break;
-                }}
-            }}
-            unset($group);
-            config_set_path("system/group", $group_config);
-
             $user_config[] = $userent;
-            config_set_path("system/user", $user_config);
         }}
 
-        $user_config = config_get_path("system/user", []);
         usort($user_config, function($a, $b) {{
             return strcmp($a["name"], $b["name"]);
         }});
         config_set_path("system/user", $user_config);
 
-        local_user_set_groups($userent, []);
+        $groups = config_get_path("system/group", []);
+        foreach ($groups as $idx => &$group) {{
+            if (!isset($group["member"]) || !is_array($group["member"])) {{
+                $group["member"] = [];
+            }}
+
+            $group["member"] = array_values(array_filter($group["member"], function($member_uid) use ($userent, $old_uid) {{
+                if ((string)$member_uid === (string)$userent["uid"]) {{
+                    return false;
+                }}
+                if ($old_uid !== null && $old_uid >= 2000 && (string)$member_uid === (string)$old_uid) {{
+                    return false;
+                }}
+                return true;
+            }}));
+
+            if (isset($group["name"]) && $group["name"] === "all") {{
+                $group["member"][] = (int)$userent["uid"];
+            }}
+        }}
+        unset($group);
+        config_set_path("system/group", $groups);
+
         local_user_set($userent);
-        write_config("Usuario " . $username . " registrado desde FastAPI");
-        
+        write_config("Portal Bambu: usuario " . $username . " sincronizado");
+
         require_once("captiveportal.inc");
         if (function_exists("captiveportal_configure_zone")) {{
             captiveportal_configure_zone($zone);
@@ -123,7 +127,7 @@ class PfsenseService:
         try:
             response = self.server.pfsense.exec_php(php_code)
             if response not in (True, "OK", "", None):
-                print(f"Respuesta XML-RPC pfSense: {response}")
+                print(f"[pfSense XML-RPC] Respuesta inesperada: {response}")
             return response
         except Exception as e:
             raise PfsenseSyncError(str(e)) from e
@@ -133,6 +137,75 @@ class PfsenseService:
         try:
             self.server.pfsense.exec_php('return;')
             return {"status": "ok", "message": "pfSense XML-RPC responde y acepta exec_php"}
+        except Exception as e:
+            raise PfsenseSyncError(str(e)) from e
+
+    def eliminar_usuario_pfsense(self, username):
+        """Elimina un usuario local de pfSense y limpia sus grupos."""
+        username_php = self._php_string(username)
+        zone_php = self._php_string(self.zone)
+
+        php_code = f"""
+        require_once("config.inc");
+        require_once("auth.inc");
+
+        $username = {username_php};
+        $zone = {zone_php};
+
+        $user_config = config_get_path("system/user", []);
+        $removed_uid = null;
+        $removed_user = null;
+        $found = false;
+
+        foreach ($user_config as $idx => $userent) {{
+            if (isset($userent["name"]) && $userent["name"] === $username) {{
+                $removed_uid = isset($userent["uid"]) ? (int)$userent["uid"] : null;
+                $removed_user = $userent;
+                unset($user_config[$idx]);
+                $found = true;
+                break;
+            }}
+        }}
+
+        if (!$found) {{
+            return "NOT_FOUND";
+        }}
+
+        config_set_path("system/user", array_values($user_config));
+
+        if ($removed_uid !== null && $removed_uid >= 2000) {{
+            $groups = config_get_path("system/group", []);
+            foreach ($groups as $idx => &$group) {{
+                if (!isset($group["member"]) || !is_array($group["member"])) {{
+                    continue;
+                }}
+
+                $group["member"] = array_values(array_filter($group["member"], function($member_uid) use ($removed_uid) {{
+                    return (string)$member_uid !== (string)$removed_uid;
+                }}));
+            }}
+            unset($group);
+            config_set_path("system/group", $groups);
+        }}
+
+        if ($removed_user !== null && $removed_uid !== null && $removed_uid >= 2000 && function_exists("local_user_del")) {{
+            local_user_del($removed_user);
+        }}
+
+        write_config("Portal Bambu: usuario " . $username . " eliminado");
+
+        require_once("captiveportal.inc");
+        if (function_exists("captiveportal_configure_zone")) {{
+            captiveportal_configure_zone($zone);
+        }}
+
+        return "OK";
+        """
+        try:
+            response = self.server.pfsense.exec_php(php_code)
+            if response not in (True, "OK", "NOT_FOUND", "", None):
+                print(f"[pfSense XML-RPC] Respuesta inesperada al eliminar: {response}")
+            return response
         except Exception as e:
             raise PfsenseSyncError(str(e)) from e
 

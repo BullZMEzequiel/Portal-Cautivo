@@ -88,6 +88,30 @@ def diagnosticar_pfsense():
         )
 
 
+@router.delete("/username/{username}")
+def eliminar_empleado_por_username(username: str):
+    """Elimina un empleado usando el username, aunque solo exista en pfSense."""
+    try:
+        pfsense_response = pfsense_service.eliminar_usuario_pfsense(username)
+
+        supabase_response = supabase_client.table("empleados").delete().eq("username", username).execute()
+        eliminado_supabase = bool(supabase_response.data)
+
+        return {
+            "message": "Eliminación por username procesada",
+            "username": username,
+            "pfsense": "no encontrado" if pfsense_response == "NOT_FOUND" else "eliminado",
+            "supabase": "eliminado" if eliminado_supabase else "no encontrado"
+        }
+    except PfsenseSyncError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Usuario no eliminado de pfSense: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al eliminar por username: {str(e)}")
+
+
 @router.patch("/{empleado_id}")
 def actualizar_empleado(empleado_id: str, empleado: EmpleadoUpdate):
     """Permite modificar límites, roles o banear (estado_wifi = false)"""
@@ -110,11 +134,25 @@ def actualizar_empleado(empleado_id: str, empleado: EmpleadoUpdate):
 
 @router.delete("/{empleado_id}")
 def eliminar_empleado(empleado_id: str):
-    """Elimina por completo al empleado de la base de datos"""
+    """Elimina por completo al empleado de pfSense y de la base de datos."""
     try:
+        empleado_response = supabase_client.table("empleados").select("id, username").eq("id", empleado_id).limit(1).execute()
+        if not empleado_response.data:
+            raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+        username = empleado_response.data[0]["username"]
+        pfsense_service.eliminar_usuario_pfsense(username)
+
         response = supabase_client.table("empleados").delete().eq("id", empleado_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Empleado no encontrado")
-        return {"message": "Empleado eliminado correctamente de la base de datos"}
+        return {"message": "Empleado eliminado correctamente de pfSense y Supabase"}
+    except PfsenseSyncError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Empleado no eliminado de pfSense: {str(e)}"
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al eliminar: {str(e)}")
