@@ -1,9 +1,12 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Pydantic buscará automáticamente estas variables en el archivo .env
     SUPABASE_URL: str
     SUPABASE_KEY: str
+    SUPABASE_SERVICE_KEY: Optional[str] = None
     PFSENSE_HOST: str
     PFSENSE_USER: str
     PFSENSE_PASSWORD: str

@@ -3,7 +3,7 @@ cat << 'EOF' > .gitignore
 backend/.venv/
 backend/__pycache__/
 *.pyc
-backend/.env*
+backend/.env
 
 # Node / React (Frontend)
 frontend/node_modules/
