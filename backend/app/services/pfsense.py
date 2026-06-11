@@ -24,25 +24,22 @@ class PfsenseService:
         self.server = xmlrpc.client.ServerProxy(self.url, context=self.context)
 
     def registrar_usuario_pfsense(self, username, password):
-        """Añade un usuario común de Captive Portal al User Manager de pfSense."""
+        """Añade un usuario de Captive Portal al User Manager de pfSense."""
         username_php = self._php_string(username)
         password_php = self._php_string(password)
         description_php = self._php_string(f"Empleado Portal Bambu: {username}")
-        zone_php = self._php_string(self.zone)
 
         php_code = f"""
         require_once("config.inc");
-        require_once("auth.inc");
 
         $username = {username_php};
         $password = {password_php};
         $description = {description_php};
-        $zone = {zone_php};
 
         $user_config = config_get_path("system/user", []);
         $existing_idx = null;
-        foreach ($user_config as $idx => $usuario_existente) {{
-            if (isset($usuario_existente["name"]) && $usuario_existente["name"] === $username) {{
+        foreach ($user_config as $idx => $u) {{
+            if (isset($u["name"]) && $u["name"] === $username) {{
                 $existing_idx = $idx;
                 break;
             }}
@@ -55,10 +52,11 @@ class PfsenseService:
         $userent["name"] = $username;
         $userent["descr"] = $description;
         $userent["expires"] = "";
-        $userent["authorizedkeys"] = "";
-        $userent["ipsecpsk"] = "";
         $userent["priv"] = ["user-services-captiveportal-login"];
-        unset($userent["groupname"]);
+
+        // Hashear la contraseña directamente con bcrypt nativo de PHP
+        $userent["password"] = password_hash($password, PASSWORD_BCRYPT);
+        if (isset($userent["md5-hash"])) unset($userent["md5-hash"]);
 
         if (!isset($userent["uid"]) || (int)$userent["uid"] < 2000) {{
             $max_uid = 1999;
@@ -67,44 +65,26 @@ class PfsenseService:
                     $max_uid = max($max_uid, (int)$existing_user["uid"]);
                 }}
             }}
-
             $nextuid = max((int)config_get_path("system/nextuid", 2000), $max_uid + 1, 2000);
             $userent["uid"] = $nextuid;
             config_set_path("system/nextuid", $nextuid + 1);
         }}
-
-        if (!function_exists("local_user_set_password")) {{
-            throw new Exception("La funcion local_user_set_password no existe en este pfSense");
-        }}
-        local_user_set_password($userent, $password);
 
         if ($existing_idx !== null) {{
             $user_config[$existing_idx] = $userent;
         }} else {{
             $user_config[] = $userent;
         }}
-
-        usort($user_config, function($a, $b) {{
-            return strcmp($a["name"], $b["name"]);
-        }});
         config_set_path("system/user", $user_config);
 
         $groups = config_get_path("system/group", []);
         foreach ($groups as $idx => &$group) {{
-            if (!isset($group["member"]) || !is_array($group["member"])) {{
-                $group["member"] = [];
-            }}
-
-            $group["member"] = array_values(array_filter($group["member"], function($member_uid) use ($userent, $old_uid) {{
-                if ((string)$member_uid === (string)$userent["uid"]) {{
-                    return false;
-                }}
-                if ($old_uid !== null && $old_uid >= 2000 && (string)$member_uid === (string)$old_uid) {{
-                    return false;
-                }}
+            if (!isset($group["member"])) $group["member"] = [];
+            $group["member"] = array_values(array_filter($group["member"], function($uid) use ($userent, $old_uid) {{
+                if ((string)$uid === (string)$userent["uid"]) return false;
+                if ($old_uid !== null && $old_uid >= 2000 && (string)$uid === (string)$old_uid) return false;
                 return true;
             }}));
-
             if (isset($group["name"]) && $group["name"] === "all") {{
                 $group["member"][] = (int)$userent["uid"];
             }}
@@ -112,14 +92,7 @@ class PfsenseService:
         unset($group);
         config_set_path("system/group", $groups);
 
-        local_user_set($userent);
         write_config("Portal Bambu: usuario " . $username . " sincronizado");
-
-        require_once("captiveportal.inc");
-        if (function_exists("captiveportal_configure_zone")) {{
-            captiveportal_configure_zone($zone);
-        }}
-
         return "OK";
         """
         try:
@@ -223,42 +196,129 @@ class PfsenseService:
     
     def obtener_estado_portal(self):
         """
-        Consulta nativamente el estado del Portal Cautivo via XML-RPC.
-        Retorna la lista de usuarios activos con su IP, MAC y consumo de datos.
+        Consulta las sesiones activas del Portal Cautivo leyendo la SQLite directamente.
+        Compatible con pfSense 2.7+ donde captiveportal_read_db() cambió de API.
         """
+        zone = self.zone
         php_code = f"""
-        require_once("captiveportal.inc");
-        
-        // Capturar todas las sesiones activas en la zona configurada
-        $cpzone = "{self.zone}";
-        $active_sessions = captiveportal_read_db();
-        
-        $conectados = [];
-        foreach ($active_sessions as $session) {{
-            // Filtrar solo las que correspondan a nuestra zona actual
-            if ($session[1] == $cpzone || empty($cpzone)) {{
-                $conectados[] = [
-                    "username" => $session[4],
-                    "ip" => $session[2],
-                    "mac" => $session[3],
-                    "session_id" => $session[0],
-                    "bytes_uploaded" => $session[7],
-                    "bytes_downloaded" => $session[8],
-                    "connected_at" => date("Y-m-d H:i:s", $session[5])
-                ];
-            }}
+        require_once("config.inc");
+        $cpzone  = '{zone}';
+        $dbfile  = "/var/db/captiveportal{{$cpzone}}.db";
+        $result  = [];
+
+        if (!file_exists($dbfile)) {{
+            echo json_encode([]);
+            return;
         }}
-        echo json_encode($conectados);
+
+        try {{
+            $db = new SQLite3($dbfile, SQLITE3_OPEN_READONLY);
+            $query = $db->query(
+                "SELECT sessionid, allow_time, ip, mac, username, bytes_in, bytes_out FROM captiveportal"
+            );
+            if ($query) {{
+                while ($row = $query->fetchArray(SQLITE3_ASSOC)) {{
+                    $result[] = [
+                        "session_id"       => (string)($row["sessionid"]  ?? ""),
+                        "username"         => (string)($row["username"]   ?? ""),
+                        "ip"               => (string)($row["ip"]         ?? ""),
+                        "mac"              => (string)($row["mac"]        ?? ""),
+                        "bytes_uploaded"   => (int)($row["bytes_out"]     ?? 0),
+                        "bytes_downloaded" => (int)($row["bytes_in"]      ?? 0),
+                        "connected_at"     => date("Y-m-d H:i:s", (int)($row["allow_time"] ?? 0))
+                    ];
+                }}
+            }}
+            $db->close();
+        }} catch (Exception $e) {{
+            echo json_encode(["__error" => $e->getMessage()]);
+            return;
+        }}
+
+        echo json_encode($result);
         """
         try:
-            # pfSense nos devuelve la salida del "echo" en un formato string JSON
             response = self.server.pfsense.exec_php(php_code)
             import json
-            return json.loads(response) if response else []
+            data = json.loads(response) if response else []
+            if isinstance(data, dict) and "__error" in data:
+                print(f"[pfSense SQLite] Error interno: {data['__error']}")
+                return []
+            return data
         except Exception as e:
-            print(f"Error al extraer logs en tiempo real de pfSense: {e}")
+            print(f"[pfSense] Error leyendo sesiones: {e}")
             return []
 
+
+    def obtener_estado_bloqueo(self) -> str:
+        """Devuelve 'activo', 'inactivo' o 'no_configurado' según el grupo DNSBL Redes_Sociales."""
+        php_code = """
+        require_once("config.inc");
+        $groups = config_get_path("installedpackages/pfblockerngdnsbl/config", []);
+        foreach ($groups as $group) {
+            $nombre = $group["aliasname"] ?? "";
+            // pfBlockerNG agrega _custom al alias de listas manuales; buscamos ambas variantes
+            if ($nombre === "Redes_Sociales" || $nombre === "Redes_Sociales_custom"
+                || strpos($nombre, "Redes_Sociales") === 0) {
+                echo (isset($group["action"]) && $group["action"] !== "Disabled") ? "activo" : "inactivo";
+                return;
+            }
+        }
+        echo "no_configurado";
+        """
+        try:
+            response = self.server.pfsense.exec_php(php_code)
+            return response.strip() if response else "no_configurado"
+        except Exception as e:
+            raise PfsenseSyncError(str(e)) from e
+
+    def toggle_bloqueo_redes(self, enable: bool) -> str:
+        """Activa o desactiva el grupo DNSBL 'Redes_Sociales' en pfBlockerNG y fuerza la recarga."""
+        nueva_accion = "Unbound" if enable else "Disabled"
+        nueva_accion_php = self._php_string(nueva_accion)
+        mensaje_php = self._php_string(
+            f"Portal Bambu: bloqueo redes sociales {'activado' if enable else 'desactivado'}"
+        )
+
+        php_code = f"""
+        require_once("config.inc");
+
+        $groups = config_get_path("installedpackages/pfblockerngdnsbl/config", []);
+        $encontrado = false;
+        foreach ($groups as $idx => &$group) {{
+            $nombre = $group["aliasname"] ?? "";
+            if ($nombre === "Redes_Sociales" || $nombre === "Redes_Sociales_custom"
+                || (strpos($nombre, "Redes_Sociales") === 0)) {{
+                $group["action"] = {nueva_accion_php};
+                $encontrado = true;
+                break;
+            }}
+        }}
+        unset($group);
+
+        if (!$encontrado) {{
+            return "GRUPO_NO_ENCONTRADO";
+        }}
+
+        config_set_path("installedpackages/pfblockerngdnsbl/config", $groups);
+        write_config({mensaje_php});
+
+        // Forzar recarga de pfBlockerNG (actualiza Unbound con los nuevos grupos DNSBL)
+        if (file_exists("/usr/local/pkg/pfblockerng/pfblockerng.php")) {{
+            exec("/usr/local/sbin/pfSsh.php playback pfblockerng cron force" . " > /dev/null 2>&1 &");
+        }}
+
+        return "OK";
+        """
+        try:
+            response = self.server.pfsense.exec_php(php_code)
+            if response == "GRUPO_NO_ENCONTRADO":
+                raise PfsenseSyncError("Grupo 'Redes_Sociales' no encontrado en pfBlockerNG. Verificá que el grupo esté creado con ese nombre exacto.")
+            return response
+        except PfsenseSyncError:
+            raise
+        except Exception as e:
+            raise PfsenseSyncError(str(e)) from e
 
     @staticmethod
     def _php_string(value):
